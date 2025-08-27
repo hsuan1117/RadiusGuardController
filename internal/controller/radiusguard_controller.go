@@ -18,10 +18,17 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	v1 "k8s.io/api/apps/v1"
+	v2 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	networkingv1 "github.com/hsuan1117/RadiusGuardController/api/v1"
@@ -49,9 +56,152 @@ type RADIUSGuardReconciler struct {
 func (r *RADIUSGuardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var radiusGuard networkingv1.RADIUSGuard
+	if err := r.Get(ctx, req.NamespacedName, &radiusGuard); err != nil {
+		// Handle not found error (object deleted)
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	configMap := r.ConstructConfigMap(&radiusGuard)
+	if err := controllerutil.SetControllerReference(&radiusGuard, configMap, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	foundConfigMap := &v2.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: configMap.Name, Namespace: configMap.Namespace}, foundConfigMap)
+	if err != nil && errors.IsNotFound(err) {
+		ctrl.Log.Info("Creating a new ConfigMap", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
+		err = r.Create(ctx, configMap)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	} else if err != nil {
+		return ctrl.Result{}, err
+	} else {
+		foundConfigMap.Data = configMap.Data
+		err = r.Update(ctx, foundConfigMap)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	daemonSet := r.ConstructDaemonSet(&radiusGuard)
+	if err := controllerutil.SetControllerReference(&radiusGuard, daemonSet, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	foundDaemonSet := &v1.DaemonSet{}
+	err = r.Get(ctx, types.NamespacedName{Name: daemonSet.Name, Namespace: daemonSet.Namespace}, foundDaemonSet)
+	if err != nil && errors.IsNotFound(err) {
+		ctrl.Log.Info("Creating a new DaemonSet", "DaemonSet.Namespace", daemonSet.Namespace, "DaemonSet.Name", daemonSet.Name)
+		err = r.Create(ctx, daemonSet)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *RADIUSGuardReconciler) ConstructConfigMap(radiusGuard *networkingv1.RADIUSGuard) *v2.ConfigMap {
+	clientsConf := ""
+	for _, client := range radiusGuard.Spec.Clients {
+		clientsConf += fmt.Sprintf(`client %s {
+    ipaddr = %s
+    secret = %s
+}
+
+`, client.Name, client.IPAddress, client.Secret)
+	}
+
+	return &v2.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      radiusGuard.Name + "-config",
+			Namespace: radiusGuard.Namespace,
+			Labels: map[string]string{
+				"app":         "radiusguard",
+				"radiusguard": radiusGuard.Name,
+			},
+		},
+		Data: map[string]string{
+			"clients.conf": clientsConf,
+		},
+	}
+}
+
+func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RADIUSGuard) *v1.DaemonSet {
+	labels := map[string]string{
+		"app":         "radiusguard",
+		"radiusguard": radiusGuard.Name,
+	}
+
+	hostPort := int32(1812)
+
+	return &v1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      radiusGuard.Name + "-guard",
+			Namespace: radiusGuard.Namespace,
+			Labels:    labels,
+		},
+		Spec: v1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: v2.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: v2.PodSpec{
+					//NodeSelector: radiusGuard.Spec.Guard.NodeSelector,
+					HostNetwork: true,
+					Containers: []v2.Container{
+						{
+							Name:            "freeradius",
+							Image:           "freeradius/freeradius-server:latest",
+							ImagePullPolicy: v2.PullAlways,
+							Ports: []v2.ContainerPort{
+								{
+									Name:          "radius",
+									ContainerPort: 1812,
+									HostPort:      hostPort,
+									Protocol:      v2.ProtocolUDP,
+								},
+								{
+									Name:          "radius-acct",
+									ContainerPort: 1813,
+									HostPort:      hostPort + 1,
+									Protocol:      v2.ProtocolUDP,
+								},
+							},
+							TTY: true,
+							VolumeMounts: []v2.VolumeMount{
+								{
+									Name:      "clients-config",
+									MountPath: "/etc/raddb/clients.conf",
+									SubPath:   "clients.conf",
+								},
+							},
+						},
+					},
+					Volumes: []v2.Volume{
+						{
+							Name: "clients-config",
+							VolumeSource: v2.VolumeSource{
+								ConfigMap: &v2.ConfigMapVolumeSource{
+									LocalObjectReference: v2.LocalObjectReference{
+										Name: radiusGuard.Name + "-config",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
