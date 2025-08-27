@@ -20,8 +20,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// RADIUSClient Defines the RADIUS Client Object
+type RADIUSClient struct {
+	// IP address or CIDR of the client
+	IPAddress string `json:"ipAddress"`
+
+	// Shared secret for this client
+	Secret string `json:"secret"`
+
+	// Friendly name for the client
+	Name string `json:"name,omitempty"`
+}
 
 // RADIUSGuardSpec defines the desired state of RADIUSGuard
 type RADIUSGuardSpec struct {
@@ -30,9 +39,7 @@ type RADIUSGuardSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// foo is an example field of RADIUSGuard. Edit radiusguard_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Clients []RADIUSClient `json:"clients"`
 }
 
 // RADIUSGuardStatus defines the observed state of RADIUSGuard.
