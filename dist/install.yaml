@@ -47,6 +47,12 @@ spec:
           spec:
             description: spec defines the desired state of RADIUSGuard
             properties:
+              acctPort:
+                default: 1813
+                type: integer
+              authPort:
+                default: 1812
+                type: integer
               clients:
                 items:
                   description: RADIUSClient Defines the RADIUS Client Object
@@ -425,7 +431,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: quay.io/hsuan/radiusguard:latest
+        image: harbor-new.wlan.nthu.dev/library/radiusguardcontroller:latest
         livenessProbe:
           httpGet:
             path: /healthz

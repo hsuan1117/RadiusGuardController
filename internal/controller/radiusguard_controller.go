@@ -138,7 +138,14 @@ func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RAD
 		"radiusguard": radiusGuard.Name,
 	}
 
-	hostPort := int32(1812)
+	authPort := radiusGuard.Spec.AuthPort
+	if authPort == 0 {
+		authPort = 1812
+	}
+	acctPort := radiusGuard.Spec.AcctPort
+	if acctPort == 0 {
+		acctPort = 1813
+	}
 
 	return &v1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -166,13 +173,13 @@ func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RAD
 								{
 									Name:          "radius",
 									ContainerPort: 1812,
-									HostPort:      hostPort,
+									HostPort:      int32(authPort),
 									Protocol:      v2.ProtocolUDP,
 								},
 								{
 									Name:          "radius-acct",
 									ContainerPort: 1813,
-									HostPort:      hostPort + 1,
+									HostPort:      int32(acctPort),
 									Protocol:      v2.ProtocolUDP,
 								},
 							},

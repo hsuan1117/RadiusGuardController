@@ -40,6 +40,14 @@ type RADIUSGuardSpec struct {
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
 	Clients []RADIUSClient `json:"clients"`
+
+	// +optional
+	// +kubebuilder:default=1812
+	AuthPort int `json:"authPort,omitempty"`
+
+	// +optional
+	// +kubebuilder:default=1813
+	AcctPort int `json:"acctPort,omitempty"`
 }
 
 // RADIUSGuardStatus defines the observed state of RADIUSGuard.
