@@ -431,7 +431,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: harbor-new.wlan.nthu.dev/library/radiusguardcontroller:latest
+        image: quay.io/hsuan/radiusguard:latest
         livenessProbe:
           httpGet:
             path: /healthz
