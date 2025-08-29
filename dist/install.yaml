@@ -56,6 +56,10 @@ spec:
               backendSecret:
                 description: Custom shared secret for communicating with backend replicas
                 type: string
+              backendSelector:
+                additionalProperties:
+                  type: string
+                type: object
               backendServiceName:
                 type: string
               clients:
@@ -215,6 +219,14 @@ kind: ClusterRole
 metadata:
   name: radiusguardcontroller-manager-role
 rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - networking.hsuan.app
   resources:

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	v1 "k8s.io/api/apps/v1"
 	v2 "k8s.io/api/core/v1"
@@ -43,6 +44,7 @@ type RADIUSGuardReconciler struct {
 // +kubebuilder:rbac:groups=networking.hsuan.app,resources=radiusguards,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.hsuan.app,resources=radiusguards/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.hsuan.app,resources=radiusguards/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -63,7 +65,7 @@ func (r *RADIUSGuardReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	configMap := r.ConstructConfigMap(&radiusGuard)
-	// if backend service and secret specified, add proxy.conf using provided secret
+	// if backend service and secret specified, or backend selector and secret specified, add proxy.conf
 	if radiusGuard.Spec.BackendServiceName != "" && radiusGuard.Spec.BackendSecret != "" {
 		var backendSvc v2.Service
 		if err := r.Get(ctx, types.NamespacedName{Name: radiusGuard.Spec.BackendServiceName, Namespace: radiusGuard.Namespace}, &backendSvc); err != nil {
@@ -79,17 +81,69 @@ func (r *RADIUSGuardReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if acctPort == 0 {
 			acctPort = 1813
 		}
-		proxyConf := fmt.Sprintf(`realm DEFAULT {
-    type = radius
-    secret = %s
-    authhost = %s:%d
-    accthost = %s:%d
-
-    nostrip
-}
-
-`, secretValue, host, authPort, host, acctPort)
-		configMap.Data["proxy.conf"] = proxyConf
+		// build proxyConf in new format
+		var bldr strings.Builder
+		serverName := "hs1"
+		bldr.WriteString(fmt.Sprintf("home_server %s {\n", serverName))
+		bldr.WriteString("    type    = auth\n")
+		bldr.WriteString(fmt.Sprintf("    ipaddr  = %s\n", host))
+		bldr.WriteString(fmt.Sprintf("    port    = %d\n", authPort))
+		bldr.WriteString(fmt.Sprintf("    secret  = %s\n", secretValue))
+		bldr.WriteString("    status_check = status-server\n")
+		bldr.WriteString("}\n\n")
+		poolName := radiusGuard.Name + "-pool"
+		bldr.WriteString(fmt.Sprintf("home_server_pool %s {\n", poolName))
+		bldr.WriteString("    type = load-balance\n")
+		bldr.WriteString(fmt.Sprintf("    home_server = %s\n", serverName))
+		bldr.WriteString("}\n\n")
+		bldr.WriteString(fmt.Sprintf("realm %s {\n", radiusGuard.Name))
+		bldr.WriteString(fmt.Sprintf("    auth_pool = %s\n", poolName))
+		bldr.WriteString("}\n")
+		configMap.Data["proxy.conf"] = bldr.String()
+	} else if len(radiusGuard.Spec.BackendSelector) > 0 && radiusGuard.Spec.BackendSecret != "" {
+		// list pods matching selector
+		var podList v2.PodList
+		listOpts := []client.ListOption{
+			client.InNamespace(radiusGuard.Namespace),
+			client.MatchingLabels(radiusGuard.Spec.BackendSelector),
+		}
+		if err := r.List(ctx, &podList, listOpts...); err != nil {
+			return ctrl.Result{}, err
+		}
+		secretValue := radiusGuard.Spec.BackendSecret
+		authPort := radiusGuard.Spec.AuthPort
+		if authPort == 0 {
+			authPort = 1812
+		}
+		acctPort := radiusGuard.Spec.AcctPort
+		if acctPort == 0 {
+			acctPort = 1813
+		}
+		// build proxyConf in new format
+		var bldr strings.Builder
+		var names []string
+		for i, pod := range podList.Items {
+			name := fmt.Sprintf("hs%d", i+1)
+			names = append(names, name)
+			bldr.WriteString(fmt.Sprintf("home_server %s {\n", name))
+			bldr.WriteString("    type    = auth\n")
+			bldr.WriteString(fmt.Sprintf("    ipaddr  = %s\n", pod.Status.PodIP))
+			bldr.WriteString(fmt.Sprintf("    port    = %d\n", authPort))
+			bldr.WriteString(fmt.Sprintf("    secret  = %s\n", secretValue))
+			bldr.WriteString("    status_check = status-server\n")
+			bldr.WriteString("}\n\n")
+		}
+		poolName := radiusGuard.Name + "-pool"
+		bldr.WriteString(fmt.Sprintf("home_server_pool %s {\n", poolName))
+		bldr.WriteString("    type = load-balance\n")
+		for _, n := range names {
+			bldr.WriteString(fmt.Sprintf("    home_server = %s\n", n))
+		}
+		bldr.WriteString("}\n\n")
+		bldr.WriteString(fmt.Sprintf("realm %s {\n", radiusGuard.Name))
+		bldr.WriteString(fmt.Sprintf("    auth_pool = %s\n", poolName))
+		bldr.WriteString("}\n")
+		configMap.Data["proxy.conf"] = bldr.String()
 	}
 
 	if err := controllerutil.SetControllerReference(&radiusGuard, configMap, r.Scheme); err != nil {
@@ -137,13 +191,13 @@ func (r *RADIUSGuardReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 func (r *RADIUSGuardReconciler) ConstructConfigMap(radiusGuard *networkingv1.RADIUSGuard) *v2.ConfigMap {
 	clientsConf := ""
-	for _, client := range radiusGuard.Spec.Clients {
+	for _, c := range radiusGuard.Spec.Clients {
 		clientsConf += fmt.Sprintf(`client %s {
     ipaddr = %s
     secret = %s
 }
 
-`, client.Name, client.IPAddress, client.Secret)
+`, c.Name, c.IPAddress, c.Secret)
 	}
 
 	return &v2.ConfigMap{
@@ -180,7 +234,7 @@ func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RAD
 	mounts := []v2.VolumeMount{
 		{Name: "clients-config", MountPath: "/etc/raddb/clients.conf", SubPath: "clients.conf"},
 	}
-	if radiusGuard.Spec.BackendServiceName != "" && radiusGuard.Spec.BackendSecret != "" {
+	if radiusGuard.Spec.BackendSecret != "" && (radiusGuard.Spec.BackendServiceName != "" || len(radiusGuard.Spec.BackendSelector) > 0) {
 		mounts = append(mounts, v2.VolumeMount{Name: "clients-config", MountPath: "/etc/raddb/proxy.conf", SubPath: "proxy.conf"})
 	}
 	return &v1.DaemonSet{

@@ -54,6 +54,9 @@ type RADIUSGuardSpec struct {
 	// +optional
 	// +kubebuilder:default=1813
 	AcctPort int `json:"acctPort,omitempty"`
+
+	// +optional
+	BackendSelector map[string]string `json:"backendSelector,omitempty"`
 }
 
 // RADIUSGuardStatus defines the observed state of RADIUSGuard.
