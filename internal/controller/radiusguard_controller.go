@@ -262,10 +262,10 @@ func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RAD
 							Name:            "freeradius",
 							Image:           "docker.io/freeradius/freeradius-server:latest",
 							ImagePullPolicy: v2.PullAlways,
-							Command: []string{
-								"freeradius",
-								"-X",
-							},
+							//Command: []string{
+							//	"freeradius",
+							//	"-X",
+							//},
 							Ports: []v2.ContainerPort{
 								{
 									Name:          "radius",
