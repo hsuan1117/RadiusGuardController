@@ -198,7 +198,10 @@ func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RAD
 					Labels: labels,
 				},
 				Spec: v2.PodSpec{
-					DNSPolicy:   v2.DNSClusterFirstWithHostNet,
+					DNSPolicy: v2.DNSClusterFirstWithHostNet,
+					SecurityContext: &v2.PodSecurityContext{
+						RunAsUser: new(int64),
+					},
 					HostNetwork: true,
 					Containers: []v2.Container{
 						{
