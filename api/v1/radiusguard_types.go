@@ -42,6 +42,12 @@ type RADIUSGuardSpec struct {
 	Clients []RADIUSClient `json:"clients"`
 
 	// +optional
+	BackendServiceName string `json:"backendServiceName,omitempty"`
+
+	// Custom shared secret for communicating with backend replicas
+	BackendSecret string `json:"backendSecret,omitempty"`
+
+	// +optional
 	// +kubebuilder:default=1812
 	AuthPort int `json:"authPort,omitempty"`
 

@@ -63,6 +63,35 @@ func (r *RADIUSGuardReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	configMap := r.ConstructConfigMap(&radiusGuard)
+	// if backend service and secret specified, add proxy.conf using provided secret
+	if radiusGuard.Spec.BackendServiceName != "" && radiusGuard.Spec.BackendSecret != "" {
+		var backendSvc v2.Service
+		if err := r.Get(ctx, types.NamespacedName{Name: radiusGuard.Spec.BackendServiceName, Namespace: radiusGuard.Namespace}, &backendSvc); err != nil {
+			return ctrl.Result{}, err
+		}
+		secretValue := radiusGuard.Spec.BackendSecret
+		host := fmt.Sprintf("%s.%s.svc.cluster.local", radiusGuard.Spec.BackendServiceName, radiusGuard.Namespace)
+		authPort := radiusGuard.Spec.AuthPort
+		if authPort == 0 {
+			authPort = 1812
+		}
+		acctPort := radiusGuard.Spec.AcctPort
+		if acctPort == 0 {
+			acctPort = 1813
+		}
+		proxyConf := fmt.Sprintf(`realm DEFAULT {
+    type = radius
+    secret = %s
+    authhost = %s:%d
+    accthost = %s:%d
+
+    nostrip
+}
+
+`, secretValue, host, authPort, host, acctPort)
+		configMap.Data["proxy.conf"] = proxyConf
+	}
+
 	if err := controllerutil.SetControllerReference(&radiusGuard, configMap, r.Scheme); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -133,11 +162,6 @@ func (r *RADIUSGuardReconciler) ConstructConfigMap(radiusGuard *networkingv1.RAD
 }
 
 func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RADIUSGuard) *v1.DaemonSet {
-	labels := map[string]string{
-		"app":         "radiusguard",
-		"radiusguard": radiusGuard.Name,
-	}
-
 	authPort := radiusGuard.Spec.AuthPort
 	if authPort == 0 {
 		authPort = 1812
@@ -147,6 +171,18 @@ func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RAD
 		acctPort = 1813
 	}
 
+	labels := map[string]string{
+		"app":         "radiusguard",
+		"radiusguard": radiusGuard.Name,
+	}
+
+	// prepare volume mounts conditionally including proxy.conf
+	mounts := []v2.VolumeMount{
+		{Name: "clients-config", MountPath: "/etc/raddb/clients.conf", SubPath: "clients.conf"},
+	}
+	if radiusGuard.Spec.BackendServiceName != "" && radiusGuard.Spec.BackendSecret != "" {
+		mounts = append(mounts, v2.VolumeMount{Name: "clients-config", MountPath: "/etc/raddb/proxy.conf", SubPath: "proxy.conf"})
+	}
 	return &v1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      radiusGuard.Name + "-guard",
@@ -162,13 +198,16 @@ func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RAD
 					Labels: labels,
 				},
 				Spec: v2.PodSpec{
-					//NodeSelector: radiusGuard.Spec.Guard.NodeSelector,
 					HostNetwork: true,
 					Containers: []v2.Container{
 						{
 							Name:            "freeradius",
-							Image:           "freeradius/freeradius-server:latest",
+							Image:           "docker.io/freeradius/freeradius-server:latest",
 							ImagePullPolicy: v2.PullAlways,
+							Command: []string{
+								"freeradius",
+								"-X",
+							},
 							Ports: []v2.ContainerPort{
 								{
 									Name:          "radius",
@@ -183,14 +222,8 @@ func (r *RADIUSGuardReconciler) ConstructDaemonSet(radiusGuard *networkingv1.RAD
 									Protocol:      v2.ProtocolUDP,
 								},
 							},
-							TTY: true,
-							VolumeMounts: []v2.VolumeMount{
-								{
-									Name:      "clients-config",
-									MountPath: "/etc/raddb/clients.conf",
-									SubPath:   "clients.conf",
-								},
-							},
+							TTY:          true,
+							VolumeMounts: mounts,
 						},
 					},
 					Volumes: []v2.Volume{

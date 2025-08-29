@@ -53,6 +53,11 @@ spec:
               authPort:
                 default: 1812
                 type: integer
+              backendSecret:
+                description: Custom shared secret for communicating with backend replicas
+                type: string
+              backendServiceName:
+                type: string
               clients:
                 items:
                   description: RADIUSClient Defines the RADIUS Client Object
